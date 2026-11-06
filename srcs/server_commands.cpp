@@ -1,0 +1,142 @@
+#include "../includes/Server.hpp"
+#include "../includes/ft_irc.hpp"
+#include <cctype>
+
+
+
+
+
+
+
+void Server::sendNamesList(Client *client, Channel *channel)
+{
+    std::map<int, Client *>::const_iterator it;
+    std::string names;
+    std::string reply;
+
+    it = channel->getMembers().begin();
+    while (it != channel->getMembers().end())
+    {
+        if (channel->isOperator(it->second))
+            names += "@";
+        names += it->second->getNick();
+        ++it;
+        if (it != channel->getMembers().end())
+            names += " ";
+    }
+    reply = ":irc.server " + std::string(RPL_NAMREPLY) + " " + client->getNick() + " = " + channel->getName() + " :" + names + "\r\n";
+    sendReply(client->getFD(), reply);
+    reply = ":irc.server " + std::string(RPL_ENDOFNAMES) + " " + client->getNick() + " " + channel->getName() + " :End of /NAMES list.\r\n";
+    sendReply(client->getFD(), reply);
+}
+
+
+
+
+bool Server::canRegister(Client *client)
+{
+    if (!client->isAuthorized())
+        return (false);
+    if (client->getNick().empty())
+    {
+        return (false);
+    }
+    if (client->getUser().empty())
+    {
+        return (false);
+    }
+    return (true);
+};
+
+
+bool Server::registerClient(Client *client)
+{
+    std::string welcome;
+
+    if (client->isRegistered())
+        return false;
+    if (!canRegister(client))
+        return false;
+    client->setRegistered(true);
+    welcome = ":irc.server " + std::string(RPL_WELCOME) + " " + client->getNick() + " :Welcome to the IRC server\r\n";
+    sendReply(client->getFD(), welcome);
+    std::cout << welcome;
+    return true;
+}
+
+Client *Server::getClientByNickname(const std::string &nick)
+{
+    std::map<int, Client *>::iterator it;
+
+    it = _clients.begin();
+
+    while (it != _clients.end())
+    {
+        if (it->second->getNick() == nick)
+            return (it->second);
+        ++it;
+    }
+    return (NULL);
+}
+
+
+
+
+
+void Server::initCommandTable()
+{
+    _commandTable["PASS"] = &Server::PASS_cmd;
+    _commandTable["NICK"] = &Server::NICK_cmd;
+    _commandTable["USER"] = &Server::USER_cmd;
+    _commandTable["JOIN"] = &Server::JOIN_cmd;
+    _commandTable["PART"] = &Server::PART_cmd;
+    _commandTable["CAP"]  = &Server::CAP_cmd;
+    _commandTable["TOPIC"]= &Server::TOPIC_cmd;
+    _commandTable["INVITE"]= &Server::INVITE_cmd;
+    _commandTable["KICK"] = &Server::KICK_cmd;
+    _commandTable["PRIVMSG"] = &Server::PRIVMSG_cmd;
+    _commandTable["MODE"] = &Server::MODE_cmd;
+    _commandTable["PING"] = &Server::PING_cmd;
+}
+
+
+void Server::PING_cmd(int fd, const Command &cmd)
+{
+    if (cmd.getParams().empty())
+        return;
+    std::string pong = "PONG :" + cmd.getParams()[0] + "\r\n";
+    send(fd, pong.c_str(), pong.length(), 0);
+}
+
+
+void Server::command_dispatcher(int fd, const Command &cmd)
+{
+    Client *client = _clients[fd];
+
+    if (!client->isRegistered())
+    {
+        std::cout << "Client fd=" << fd << " is not registered. Command: " << cmd.getCommand() << std::endl;
+        if (!isAllowedBeforeRegister(cmd.getCommand()))
+        {
+            std::string err = ":irc.server " + std::string(ERR_NOTREGISTERED) + " * :You have not registered\r\n";
+            std::cout << "Sent 451 * :You have not registered to fd=" << fd << std::endl;
+            send(fd, err.c_str(), err.size(), 0);
+            return;
+        }
+    }
+
+    std::string upperCmd = cmd.getCommand();
+    for (size_t i = 0; i < upperCmd.length(); ++i)
+        upperCmd[i] = std::toupper(upperCmd[i]);
+
+    std::map<std::string, CommandHandler>::iterator it = _commandTable.find(upperCmd);
+    if (it != _commandTable.end())
+    {
+        (this->*(it->second))(fd, cmd);
+    }
+    else
+    {
+        std::cout << "Unknown command '" << cmd.getCommand() << "' from fd=" << fd << std::endl;
+        sendReply(fd, ":irc.server " + std::string(ERR_UNKNOWNCOMMAND) + " " + cmd.getCommand() + " :Unknown command\r\n");
+    }
+}
